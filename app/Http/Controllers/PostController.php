@@ -5,10 +5,11 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Cache;
+use App\Models\Comment; // <-- ADD THIS
+use App\Models\PostInteraction; // <-- ADD THIS
 
 class PostController extends Controller
 {
-    // Define the base API URL for your WordPress posts
     private $wpApiUrl = 'https://cns.sautiyamtaa.co.ke/wp/wp-json/wp/v2/posts';
 
     /**
@@ -16,15 +17,13 @@ class PostController extends Controller
      */
     public function index()
     {
-        // Cache the results for 10 minutes to improve performance
         $posts = Cache::remember('all_blog_posts', now()->addMinutes(10), function () {
-            // Fetch all posts from the WordPress API
-            // The '_embed' parameter includes featured image data directly
-            $response = Http::withoutVerifying()->get($this->wpApiUrl, ['_embed' => '']);
-            return $response->json();
+            try {
+                $response = Http::get($this->wpApiUrl, ['_embed' => '']);
+                return $response->successful() ? $response->json() : [];
+            } catch (\Exception $e) { return []; }
         });
 
-        // Pass the posts data to the view
         return view('blog.index', compact('posts'));
     }
 
@@ -33,31 +32,62 @@ class PostController extends Controller
      */
     public function show($slug)
     {
-        // Cache the result for this specific post for 10 minutes
         $postData = Cache::remember("blog_post_{$slug}", now()->addMinutes(10), function () use ($slug) {
-            // Fetch the specific post by its slug
-            $response = Http::get($this->wpApiUrl, [
-                'slug' => $slug,
-                '_embed' => '' // Also embed media for the single post
-            ]);
-            // The API returns an array, we want the first (and only) item
-            return $response->json()[0] ?? null;
+            try {
+                $response = Http::get($this->wpApiUrl, ['slug' => $slug, '_embed' => '']);
+                return $response->successful() ? ($response->json()[0] ?? null) : null;
+            } catch (\Exception $e) { return null; }
         });
 
-        // If the API returned no post for that slug, show a 404 error page
         if (!$postData) {
             abort(404, 'Post not found');
         }
 
-        // Map the complex API response to a simple array for the view
+        // --- NEW: Fetch interaction data from our local database ---
+        $interactions = PostInteraction::firstOrCreate(['post_slug' => $slug]);
+        $comments = Comment::where('post_slug', $slug)->where('is_approved', true)->latest()->get();
+
         $post = [
-            'title' => $postData['title']['rendered'],
-            'content' => $postData['content']['rendered'],
-            'date' => \Carbon\Carbon::parse($postData['date'])->format('F j, Y'),
-            'featured_image_url' => $postData['acf']['featured_image'] ?? 'https://placehold.co/1200x600/E53935/FFFFFF?text=Sauti+ya+Mtaa',
+            'title' => data_get($postData, 'title.rendered'),
+            'content' => data_get($postData, 'content.rendered'),
+            'date' => \Carbon\Carbon::parse(data_get($postData, 'date'))->format('F j, Y'),
+            'featured_image_url' => data_get($postData, 'acf.featured_image') ?: 'https://placehold.co/1200x600/E53935/FFFFFF?text=Sauti+ya+Mtaa',
         ];
 
-        // Pass the simplified post data to the view
-        return view('blog.show', compact('post'));
+        return view('blog.show', compact('post', 'interactions', 'comments'));
+    }
+
+    /**
+     * --- NEW: Store a new comment. ---
+     */
+    public function storeComment(Request $request, $slug)
+    {
+        $request->validate([
+            'author_name' => 'required|string|max:255',
+            'author_email' => 'required|email|max:255',
+            'content' => 'required|string|max:5000',
+        ]);
+
+        Comment::create([
+            'post_slug' => $slug,
+            'author_name' => $request->author_name,
+            'author_email' => $request->author_email,
+            'content' => $request->content,
+            'is_approved' => true, // Set to true for auto-approval. Change to false for moderation.
+        ]);
+
+        return back()->with('success', 'Thank you for your comment!');
+    }
+
+    /**
+     * --- NEW: Handle a 'like' action. ---
+     */
+    public function like($slug)
+    {
+        $interaction = PostInteraction::firstOrCreate(['post_slug' => $slug]);
+        $interaction->increment('likes_count');
+
+        return response()->json(['likes_count' => $interaction->likes_count]);
     }
 }
+

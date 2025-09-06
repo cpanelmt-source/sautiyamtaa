@@ -37,3 +37,7 @@ Route::get('/programs/{slug}', [ProgramController::class, 'show'])->name('progra
 Route::get('/events', [EventController::class, 'index'])->name('events.index');
 Route::get('/events/{slug}', [EventController::class, 'show'])->name('events.show');
 
+// A routes for handling interactions
+Route::post('/blog/{slug}/comments', [PostController::class, 'storeComment'])->name('comments.store');
+Route::post('/blog/{slug}/like', [PostController::class, 'like'])->name('posts.like');
+
